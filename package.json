@@ -1,0 +1,20 @@
+{
+  "name": "wifaq-result",
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "nodemon index.js",
+    "serve": "node index.js"
+  },
+  "private": true,
+  "dependencies": {
+    "dotenv": "^8.0.0",
+    "koa": "^2.7.0",
+    "koa-router": "^7.4.0",
+    "mongodb": "^3.2.3"
+  },
+  "devDependencies": {
+    "@types/koa": "^2.0.48",
+    "@types/node": "~8.9.4",
+    "nodemon": "^1.19.0"
+  }
+}
