@@ -1,218 +1,246 @@
-const cluster = require('cluster');
+require('dotenv').config();
+const Koa = require('koa');
+const Router = require('koa-router');
+const {MongoClient} = require('mongodb');
 
-// Fork a new worker process for each CPU Core if this the master process
-if (cluster.isMaster) {
-    // This is the master process
+function env(name, defaultValue) {
+    return process.env[name] === undefined ? defaultValue : process.env[name];
+}
 
-    // Get CPU Core count
-    const cpuCount = require('os').cpus().length;
+async function init() {
+    // Connect to mongodb
+    const mongo = await MongoClient.connect(`mongodb://${env('mongo-username')}:${env('mongo-password')}@${env('mongo-host')}:${env('mongo-port')}`, {useNewUrlParser: true});
 
-    // Create a worker for each core
-    for (let i = 0; i < cpuCount; i += 1) {
-        cluster.fork();
-    }
-} else {
-    // This is a worker process
-    require('dotenv').config();
-    const Koa = require('koa');
-    const Router = require('koa-router');
-    const {MongoClient} = require('mongodb');
+    // Results db
+    const db = mongo.db('results');
 
-    function env(name, defaultValue) {
-        return process.env[name] === undefined ? defaultValue : process.env[name];
-    }
+    // Students collection
+    const students = db.collection('students');
+    const madrasas = db.collection('madrasas');
+    const subjects = db.collection('subjects');
 
-    async function init(port) {
+    const app = new Koa();
+    const router = new Router();
+    const fourZeroFour = {
+        status: 404,
+        message: 'Nothing found!'
+    };
 
-        // Connect to mongodb
-        const mongo = await MongoClient.connect(`mongodb://${env('username')}:${env('password')}@${env('host')}:${env('port')}`, {useNewUrlParser: true});
+    /******************************************************/
 
-        // Results db
-        const db = mongo.db('results');
+    /*** Individual result ***/
 
-        // Students collection
-        const students = db.collection('students');
-        const madrasas = db.collection('madrasas');
-        const markajes = db.collection('markajes');
+    router.get('/students/:year/:classId/:roll', async (ctx, next) => {
+        const params = ctx.params;
 
-        const app = new Koa();
-        const router = new Router();
-        const fourZeroFour = {
-            status: 404,
-            message: 'Nothing found!'
-        };
-
-        /******************************************************/
-
-        /*** Individual result ***/
-
-        router.get('/students/:year/:classId/:roll', async (ctx, next) => {
-            const params = ctx.params;
-
-            const student = await students.findOne({
-                roll: Number(params.roll),
-                year: params.year,
-                classId: Number(params.classId)
-            }, {
-                projection: {
-                    _id: 0,
-                    classId: 0,
-                    year: 0,
-                    total: 0
-                }
-            });
-
-            // Serve result if exists
-            if (student) {
-
-                // Load madrasa
-                const madrasa = await madrasas.findOne({
-                    _id: student.elhaq
-                }, {
-                    projection: {
-                        _id: 0
-                    }
-                });
-
-                // Load markaj
-                const markaj = await markajes.findOne({
-                    _id: student.markaj
-                }, {
-                    projection: {
-                        _id: 0
-                    }
-                });
-
-                student.madrasa = madrasa.name;
-                student.markaj = markaj.name;
-
-                ctx.body = student;
-            } else {
-                ctx.body = {
-                    status: 404,
-                    message: 'Nothing found!'
-                };
-                ctx.status = 404;
+        const student = await students.findOne({
+            roll: Number(params.roll),
+            year: params.year,
+            classId: Number(params.classId)
+        }, {
+            projection: {
+                _id: 0,
+                classId: 0,
+                year: 0,
+                roll: 0,
             }
-
-            next();
         });
 
+        // Serve result if exists
+        if (student) {
+            // load madrasa and markaj
 
-        /*** Madrasa-wise Results ***/
+            const options = {
+                projection: {
+                    _id: 0
+                }
+            };
+            const pack = await Promise.all([
+                madrasas.findOne({
+                    _id: student.madrasa
+                }, options),
 
-        function parseElhaq(elhaq) {
-            return elhaq.replace(/@/gm, '/');
+                /*madrasas.findOne({
+                    _id: student.markaj
+                }, options),*/
+
+                subjects.findOne({
+                    year: params.year,
+                    gender: student.gender,
+                    classId: Number(params.classId)
+                }, {
+                    projection: {
+                        year: 0,
+                        classId: 0,
+                        gender: 0,
+                        _id: 0
+                    }
+                })
+            ]);
+
+            student.madrasa = pack[0].name;
+            // student.markaj = pack[1].name;
+            // student.subjects = pack[2].subjects;
+
+            /*** Remove this line ***/
+            student.subjects = pack[1].subjects;
+            console.log(pack[1]);
+            delete student.elhaq;
+
+            ctx.body = student;
+        } else {
+            ctx.body = {
+                status: 404,
+                message: 'Nothing found!'
+            };
+            ctx.status = 404;
         }
 
-        router.get('/madrasas/:year/:elhaq/:classId', async (ctx, next) => {
-            const params = ctx.params;
-            const result = await students.find({
-                year: params.year,
-                classId: Number(params.classId),
-                elhaq: parseElhaq(params.elhaq)
-            })
-                .project({
-                    _id: 0,
-                    elhaq: 0,
-                    markaj: 0,
-                    classId: 0,
-                    year: 0
-                })
-                .toArray();
-
-            const madrasa = await madrasas.findOne({
-                _id: parseElhaq(params.elhaq)
-            });
-
-            if (result.length) {
-                ctx.body = {madrasa, students: result};
-            } else {
-                ctx.body = fourZeroFour;
-
-                ctx.status = 404;
-            }
-
-            next();
-        });
-
-        /*** Medha Talika ***/
-
-        router.get('/medha-talika/:year/:classId/:gender', async (ctx, next) => {
-            const params = ctx.params;
-            const result = await students.find({
-                year: params.year,
-                classId: Number(params.classId),
-                gender: Number(params.gender),
-                position: {$gt: 0}
-            })
-                .project({
-                    _id: 0,
-                    name: 1,
-                    roll: 1,
-                    elhaq: 1,
-                    total: 1,
-                    position: 1
-                })
-                .toArray();
-
-            const elhaqs = await madrasas.find({
-                _id: {$in: result.map(student => student.elhaq)}
-            }).toArray();
-
-            if (result.length) {
-                ctx.body = {
-                    madrasas: elhaqs,
-                    students: result,
-                };
-            } else {
-                ctx.body = fourZeroFour;
-                ctx.status = 404;
-            }
-
-            next();
-        });
+        await next();
+    });
 
 
-        /*** Madrasa Statistic ***/
+    /*** Madrasa-wise Results ***/
 
-        router.get('/madrasas/stat/:elhaq', async (ctx, next) => {
-            const elhaq = parseElhaq(ctx.params.elhaq);
-            const result = await students.find({elhaq})
-                .project({
-                    _id: 0,
-                    name: 1,
-                    roll: 1,
-                    father: 1,
-                    division: 1,
-                    position: 1,
-                    classId: 1,
-                    year: 1,
-                    results: 1
-                })
-                .toArray();
-
-            const madrasa = await madrasas.findOne({_id: elhaq});
-
-            if (result.length) {
-                ctx.body = {madrasa, students: result};
-            } else {
-                ctx.body = fourZeroFour;
-                ctx.status = 404;
-            }
-
-            next();
-        });
-
-
-        /*******************************************************************/
-        app.use(router.routes());
-        app.listen(port);
+    function parseElhaq(elhaq) {
+        return elhaq.replace(/@/gm, '/');
     }
 
-    init(5000).then(() => {
-        console.log('The app is running on http://localhost:5000');
+    router.get('/madrasas/:elhaq/:year/:classId', async (ctx, next) => {
+        const params = ctx.params;
+
+        const madrasa = await madrasas.findOne({
+            elhaq: parseElhaq(params.elhaq)
+        });
+
+        if (!madrasa) {
+            ctx.body = fourZeroFour;
+
+            ctx.status = 404;
+
+            return await Promise.resolve(next());
+        }
+
+        const result = await students.find({
+            year: params.year,
+            classId: Number(params.classId),
+            madrasa: madrasa._id
+        })
+            .project({
+                _id: 0,
+                classId: 0,
+                year: 0,
+                graceLabel: 0,
+                dob: 0,
+                father: 0,
+                regId: 0,
+                posSub: 0,
+                markaj: 0
+            })
+            .toArray();
+
+        if (result.length) {
+            const options = {
+                projection: {
+                    _id: 0
+                }
+            };
+            const pack = await Promise.all([
+                subjects.findOne({
+                    year: params.year,
+                    gender: result[0].gender,
+                    classId: Number(params.classId)
+                }, {
+                    projection: {
+                        year: 0,
+                        classId: 0,
+                        _id: 0
+                    }
+                }),
+
+                (() => {
+                    return new Promise(resolve => {
+                        result.forEach(student => {
+                            delete student.markaj;
+                            delete student.madrasa;
+                        });
+                        resolve();
+                    });
+                })()
+            ]);
+
+            ctx.body = {
+                madrasa: madrasa.name,
+                subjects: pack[0].subjects,
+                students: result
+            };
+        } else {
+            ctx.body = fourZeroFour;
+
+            ctx.status = 404;
+        }
+
+        await next();
+    });
+
+    /*** Medha Talika ***/
+
+    router.get('/medha-talika/:year/:classId/:gender', async (ctx, next) => {
+        const params = ctx.params;
+        const result = await students.find({
+            year: params.year,
+            classId: Number(params.classId),
+            gender: Number(params.gender),
+            position: {$gt: 0}
+        })
+            .project({
+                _id: 0,
+                name: 1,
+                roll: 1,
+                madrasa: 1,
+                position: 1,
+                total: 1
+            })
+            .toArray();
+
+        const elhaqs = await madrasas.find({
+            _id: {$in: result.map(student => student.madrasa)}
+        }).project({
+            elhaq: 0
+        }).toArray();
+
+        if (result.length) {
+            ctx.body = {
+                madrasas: elhaqs,
+                students: result,
+            };
+        } else {
+            ctx.body = fourZeroFour;
+            ctx.status = 404;
+        }
+
+        await next();
+    });
+
+    /*******************************************************************/
+    app.use(async (ctx, next) => {
+        ctx.set('Access-Control-Allow-Origin', '*');
+        ctx.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+        ctx.set('Access-Control-Allow-Methods', 'GET');
+        await next();
+    });
+    app.use(router.routes());
+    app.listen(env('app-port', 5000));
+
+    process.on('exit', async () => {
+        await mongo.close();
     });
 }
 
+init().then(() => {
+    console.log('The app is running on http://localhost:5000');
+}).catch(e => {
+    console.error(e);
+    process.exit(0);
+});
 
