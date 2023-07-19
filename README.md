@@ -1,0 +1,1 @@
+### Please read the README.md in https://github.com/IbrahimAlKhalil/wifaq-result-publisher#history
